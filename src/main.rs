@@ -273,6 +273,8 @@ async fn resolve_ip(host: &str) -> anyhow::Result<String> {
         .next()
         .ok_or(anyhow::anyhow!("no dns"))?
         .ip();
+    // Remove the /32 or /128 suffix if present
+
     Ok(ip.to_string())
 }
 
@@ -322,28 +324,39 @@ async fn tick_health(
         };
 
         // GeoIP if online and geo info missing
-        let (cc, cn) = if let Some(ref ip_str) = ip {
-            let ip_addr: std::net::IpAddr = match ip_str.parse() {
-                Ok(addr) => addr,
-                Err(_) => continue,
-            };
-            match reader.lookup::<City>(ip_addr) {
-                Ok(city) => {
-                    let country_code = city.country
+        let (cc, cn) = {
+            let mut country_code: Option<String> = None;
+            let mut country_name: Option<String> = None;
+
+            if let Some(mut ip_str) = ip.as_deref() {
+                // Remove the /32 or /128 suffix if present
+                if let Some(pos) = ip_str.find('/') {
+                    ip_str = &ip_str[..pos];
+                }
+                println!("Looking up GeoIP for IP {ip_str}");
+                let ip_addr: std::net::IpAddr = match ip_str.parse() {
+                    Ok(addr) => addr,
+                    Err(_) => {
+                        println!("Could not parse IP address {ip_str} for GeoIP lookup");
+                        // skip GeoIP lookup for this node and continue with next node
+                        continue;
+                    }
+                };
+
+                if let Ok(city) = reader.lookup::<City>(ip_addr) {
+                    country_code = city.country
                         .as_ref()
                         .and_then(|c| c.iso_code)
                         .map(|s| s.to_string());
-                    let country_name = city.country
+                    country_name = city.country
                         .as_ref()
                         .and_then(|c| c.names.as_ref())
                         .and_then(|m| m.get("en"))
                         .map(|s| s.to_string());
-                    (country_code, country_name)
                 }
-                Err(_) => (None, None),
             }
-        } else {
-            (None, None)
+
+            (country_code, country_name)
         };
 
 
