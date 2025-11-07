@@ -20,6 +20,9 @@ COPY src ./src
 COPY .sqlx ./.sqlx
 
 COPY sql_models ./sql_models
+COPY setup_geolite.sh ./
+RUN bash -c "bash setup_geolite.sh"
+
 
 # Build the application in release mode
 RUN cargo build --release
@@ -42,6 +45,7 @@ WORKDIR /app
 
 # Copy the binary from builder
 COPY --from=builder /app/target/release/hushnet-registry /app/hushnet-registry
+COPY --from=builder /app/data /app/data
 
 # Change ownership
 RUN chown -R hushnet:hushnet /app

@@ -18,6 +18,9 @@ use tokio::net::TcpListener;
 use tower_http::{cors::CorsLayer, timeout::TimeoutLayer, trace::TraceLayer};
 use tracing::{error, info};
 use types::*;
+use maxminddb::Reader;
+use maxminddb::geoip2::City;
+use std::sync::Arc;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -294,6 +297,8 @@ async fn tick_health(
     client: &reqwest::Client,
     timeout_ms: u64,
 ) -> anyhow::Result<()> {
+    static DB_PATH: &str = "data/GeoLite2-City.mmdb";
+    let reader = Arc::new(Reader::open_readfile(DB_PATH)?);
     let nodes = sqlx::query("SELECT host, api_base_url, ip::text FROM nodes")
         .fetch_all(db)
         .await?;
@@ -316,30 +321,31 @@ async fn tick_health(
             _ => ("offline", None),
         };
 
-        // GeoIP
-        let (cc, cn) = if let Some(ref ip) = ip {
-            match client
-                .get(
-                    std::env::var("GEOIP_URL")
-                        .unwrap_or("https://ipapi.co/{ip}/json/".into())
-                        .replace("{ip}", ip),
-                )
-                .timeout(StdDuration::from_secs(3))
-                .send()
-                .await
-            {
-                Ok(r) => {
-                    let j = r.json::<serde_json::Value>().await.unwrap_or_default();
-                    (
-                        j.get("country").and_then(|v| v.as_str()).map(|s| s.to_string()),
-                        j.get("country_name").and_then(|v| v.as_str()).map(|s| s.to_string()),
-                    )
+        // GeoIP if online and geo info missing
+        let (cc, cn) = if let Some(ref ip_str) = ip {
+            let ip_addr: std::net::IpAddr = match ip_str.parse() {
+                Ok(addr) => addr,
+                Err(_) => continue,
+            };
+            match reader.lookup::<City>(ip_addr) {
+                Ok(city) => {
+                    let country_code = city.country
+                        .as_ref()
+                        .and_then(|c| c.iso_code)
+                        .map(|s| s.to_string());
+                    let country_name = city.country
+                        .as_ref()
+                        .and_then(|c| c.names.as_ref())
+                        .and_then(|m| m.get("en"))
+                        .map(|s| s.to_string());
+                    (country_code, country_name)
                 }
                 Err(_) => (None, None),
             }
         } else {
             (None, None)
         };
+
 
         sqlx::query(
             r#"
